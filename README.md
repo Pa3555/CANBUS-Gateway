@@ -15,9 +15,12 @@ ESP32-based CAN bus gateway for **ESP32-CAN-X2** from Autosport Labs with dual C
 ## Features
 - ✅ **Dual CAN Bus**: Two independent CAN channels (125/250/500/1000 kbps)
 - ✅ **WiFi Modes**: Access Point (default) or Client mode
-- ✅ **CAN Bus Sniffing**: Real-time message monitoring
+- ✅ **Web Interface**: Modern responsive dashboard with real-time monitoring
+- ✅ **WebSocket Streaming**: Live CAN message updates
+- ✅ **CAN Bus Sniffing**: Real-time message monitoring (serial + web)
 - ✅ **CANopen Support**: Ready for joystick integration
 - ✅ **Serial Configuration**: Easy menu-driven setup
+- ✅ **REST API**: Full JSON API for remote configuration
 - ✅ **Persistent Settings**: All configs saved to flash
 
 ## Default WiFi Settings
@@ -36,12 +39,20 @@ https://dl.espressif.com/dl/package_esp32_index.json
 
 ### 2. Install Libraries
 - **mcp_canbus** by Longan Labs
+- **ESPAsyncWebServer** by me-no-dev
+- **AsyncTCP** by me-no-dev
+- **ArduinoJson** by Benoit Blanchon
 
 ### 3. Select Board
 Tools → Board → **"AutosportLabs ESP32-CAN-X2"**
 
 ### 4. Upload
 Open `CANBUS_Gateway/CANBUS_Gateway.ino` and upload!
+
+### 5. Access Web Interface
+- Connect to WiFi `CANIMEX_GATEWAY` (password: `Canimex2026`)
+- Open browser to **http://192.168.4.1**
+- Enjoy the modern web dashboard! 🎉
 
 ## Pin Configuration
 

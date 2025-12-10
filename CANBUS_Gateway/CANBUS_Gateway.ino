@@ -25,6 +25,10 @@
 #include <driver/twai.h>
 #include <mcp_can.h>
 #include <SPI.h>
+#include <ESPAsyncWebServer.h>
+#include <AsyncTCP.h>
+#include <ArduinoJson.h>
+#include "web_interface.h"
 
 // ============================================
 // PIN DEFINITIONS FOR ESP32-CAN-X2
@@ -65,6 +69,8 @@ enum CANSpeed_t {
 
 Preferences prefs;
 MCP_CAN CAN2(MCP2515_CS);  // CAN2 via MCP2515
+AsyncWebServer server(80);  // Web server on port 80
+AsyncWebSocket ws("/ws");   // WebSocket endpoint
 
 // Configuration variables
 WiFiMode_t wifiMode = WIFI_MODE_AP_MODE;
@@ -79,8 +85,11 @@ bool can1Running = false;
 bool can2Running = false;
 bool sniffingEnabled = false;
 uint8_t sniffingChannel = 0;
+bool webMonitoringEnabled = false;
 
 unsigned long lastHeartbeat = 0;
+unsigned long can1MessageCount = 0;
+unsigned long can2MessageCount = 0;
 
 // ============================================
 // CAN SPEED CONFIGURATION
@@ -297,6 +306,183 @@ bool receiveCAN2(uint32_t& id, uint8_t* data, uint8_t& len) {
     }
 
     return false;
+}
+
+// ============================================
+// WEB SERVER FUNCTIONS
+// ============================================
+
+void sendCANMessageToWeb(uint8_t channel, uint32_t id, uint8_t* data, uint8_t len) {
+    if (!webMonitoringEnabled || ws.count() == 0) return;
+
+    StaticJsonDocument<256> doc;
+    doc["type"] = "can";
+    doc["channel"] = channel;
+
+    char idStr[9];
+    sprintf(idStr, "%08X", id);
+    doc["id"] = idStr;
+    doc["dlc"] = len;
+
+    String dataStr = "";
+    for (int i = 0; i < len; i++) {
+        char hex[4];
+        sprintf(hex, "%02X ", data[i]);
+        dataStr += hex;
+    }
+    doc["data"] = dataStr;
+
+    String jsonString;
+    serializeJson(doc, jsonString);
+    ws.textAll(jsonString);
+}
+
+void handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
+    AwsFrameInfo *info = (AwsFrameInfo*)arg;
+    if (info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT) {
+        // Handle incoming WebSocket messages if needed
+    }
+}
+
+void onWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type,
+                       void *arg, uint8_t *data, size_t len) {
+    switch (type) {
+        case WS_EVT_CONNECT:
+            Serial.printf("WebSocket client #%u connected\n", client->id());
+            break;
+        case WS_EVT_DISCONNECT:
+            Serial.printf("WebSocket client #%u disconnected\n", client->id());
+            break;
+        case WS_EVT_DATA:
+            handleWebSocketMessage(arg, data, len);
+            break;
+        case WS_EVT_PONG:
+        case WS_EVT_ERROR:
+            break;
+    }
+}
+
+void setupWebServer() {
+    // WebSocket handler
+    ws.onEvent(onWebSocketEvent);
+    server.addHandler(&ws);
+
+    // Serve main page
+    server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
+        request->send_P(200, "text/html", index_html);
+    });
+
+    // API: Get status
+    server.on("/api/status", HTTP_GET, [](AsyncWebServerRequest *request) {
+        StaticJsonDocument<512> doc;
+        doc["type"] = "status";
+        doc["ip"] = (wifiMode == WIFI_MODE_AP_MODE) ? WiFi.softAPIP().toString() : WiFi.localIP().toString();
+        doc["wifi_mode"] = (wifiMode == WIFI_MODE_AP_MODE) ? "Access Point" : "Client";
+        doc["wifi_mode_val"] = wifiMode;
+
+        const char* speedNames[] = {"125 kbps", "250 kbps", "500 kbps", "1000 kbps"};
+        doc["can1_speed"] = speedNames[can1Speed];
+        doc["can2_speed"] = speedNames[can2Speed];
+        doc["can1_speed_val"] = can1Speed;
+        doc["can2_speed_val"] = can2Speed;
+        doc["can1_running"] = can1Running;
+        doc["can2_running"] = can2Running;
+        doc["can1_count"] = can1MessageCount;
+        doc["can2_count"] = can2MessageCount;
+
+        unsigned long uptime = millis() / 1000;
+        char uptimeStr[32];
+        sprintf(uptimeStr, "%luh %lum %lus", uptime / 3600, (uptime % 3600) / 60, uptime % 60);
+        doc["uptime"] = uptimeStr;
+
+        String jsonString;
+        serializeJson(doc, jsonString);
+        request->send(200, "application/json", jsonString);
+    });
+
+    // API: Save WiFi config
+    server.on("/api/wifi", HTTP_POST, [](AsyncWebServerRequest *request){}, NULL,
+        [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+            StaticJsonDocument<256> doc;
+            DeserializationError error = deserializeJson(doc, data);
+
+            if (!error) {
+                WiFiMode_t newMode = (WiFiMode_t)(int)doc["mode"];
+                String ssid = doc["ssid"].as<String>();
+                String pass = doc["password"].as<String>();
+
+                if (newMode == WIFI_MODE_AP_MODE && ssid.length() > 0) {
+                    apSSID = ssid;
+                    apPassword = pass;
+                } else if (newMode == WIFI_MODE_CLIENT_MODE && ssid.length() > 0) {
+                    clientSSID = ssid;
+                    clientPassword = pass;
+                }
+
+                wifiMode = newMode;
+                saveConfig();
+
+                request->send(200, "application/json", "{\"success\":true,\"message\":\"WiFi config saved. Restart to apply.\"}");
+            } else {
+                request->send(400, "application/json", "{\"success\":false,\"message\":\"Invalid JSON\"}");
+            }
+        });
+
+    // API: Save CAN config
+    server.on("/api/can", HTTP_POST, [](AsyncWebServerRequest *request){}, NULL,
+        [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+            StaticJsonDocument<128> doc;
+            DeserializationError error = deserializeJson(doc, data);
+
+            if (!error) {
+                CANSpeed_t newCAN1Speed = (CANSpeed_t)(int)doc["can1_speed"];
+                CANSpeed_t newCAN2Speed = (CANSpeed_t)(int)doc["can2_speed"];
+
+                if (newCAN1Speed != can1Speed) {
+                    can1Speed = newCAN1Speed;
+                    stopCAN1();
+                    startCAN1();
+                }
+
+                if (newCAN2Speed != can2Speed) {
+                    can2Speed = newCAN2Speed;
+                    can2Running = false;
+                    startCAN2();
+                }
+
+                saveConfig();
+                request->send(200, "application/json", "{\"success\":true,\"message\":\"CAN config updated\"}");
+            } else {
+                request->send(400, "application/json", "{\"success\":false,\"message\":\"Invalid JSON\"}");
+            }
+        });
+
+    // API: Toggle monitoring
+    server.on("/api/monitor", HTTP_POST, [](AsyncWebServerRequest *request){}, NULL,
+        [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+            StaticJsonDocument<64> doc;
+            DeserializationError error = deserializeJson(doc, data);
+
+            if (!error) {
+                webMonitoringEnabled = doc["enabled"];
+                request->send(200, "application/json", "{\"success\":true}");
+            } else {
+                request->send(400, "application/json", "{\"success\":false}");
+            }
+        });
+
+    // API: Reset to defaults
+    server.on("/api/reset", HTTP_POST, [](AsyncWebServerRequest *request) {
+        request->send(200, "application/json", "{\"success\":true,\"message\":\"Resetting...\"}");
+        delay(100);
+        prefs.clear();
+        ESP.restart();
+    });
+
+    server.begin();
+    Serial.println("Web server started");
+    Serial.print("Access at: http://");
+    Serial.println((wifiMode == WIFI_MODE_AP_MODE) ? WiFi.softAPIP().toString() : WiFi.localIP().toString());
 }
 
 // ============================================
@@ -613,6 +799,10 @@ void setup() {
     startCAN1();
     startCAN2();
 
+    // Initialize Web Server
+    Serial.println("Initializing Web Server...");
+    setupWebServer();
+
     Serial.println("\n========================================");
     Serial.println("    System Ready!");
     Serial.println("========================================\n");
@@ -626,29 +816,49 @@ void setup() {
 // ============================================
 
 void loop() {
+    // Clean up WebSocket connections
+    ws.cleanupClients();
+
     // Handle menu input
     handleMenu();
 
-    // Handle CAN sniffing
-    if (sniffingEnabled) {
-        uint32_t id;
-        uint8_t data[8];
-        uint8_t len;
+    // Handle CAN message reception (for both serial sniffer and web monitoring)
+    uint32_t id;
+    uint8_t data[8];
+    uint8_t len;
 
-        bool hasMessage = false;
-        if (sniffingChannel == 0) {
-            hasMessage = receiveCAN1(id, data, len);
-        } else {
-            hasMessage = receiveCAN2(id, data, len);
-        }
+    // Check CAN1
+    if (receiveCAN1(id, data, len)) {
+        can1MessageCount++;
 
-        if (hasMessage) {
-            Serial.printf("[%lu] [CAN%d] %08X [%d] ", millis(), sniffingChannel + 1, id, len);
+        // Send to serial if sniffing is enabled on CAN1
+        if (sniffingEnabled && sniffingChannel == 0) {
+            Serial.printf("[%lu] [CAN1] %08X [%d] ", millis(), id, len);
             for (int i = 0; i < len; i++) {
                 Serial.printf("%02X ", data[i]);
             }
             Serial.println();
         }
+
+        // Send to web clients
+        sendCANMessageToWeb(1, id, data, len);
+    }
+
+    // Check CAN2
+    if (receiveCAN2(id, data, len)) {
+        can2MessageCount++;
+
+        // Send to serial if sniffing is enabled on CAN2
+        if (sniffingEnabled && sniffingChannel == 1) {
+            Serial.printf("[%lu] [CAN2] %08X [%d] ", millis(), id, len);
+            for (int i = 0; i < len; i++) {
+                Serial.printf("%02X ", data[i]);
+            }
+            Serial.println();
+        }
+
+        // Send to web clients
+        sendCANMessageToWeb(2, id, data, len);
     }
 
     // Heartbeat LED

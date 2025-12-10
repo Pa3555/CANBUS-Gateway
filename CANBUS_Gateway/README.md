@@ -11,12 +11,15 @@ ESP32-based CAN bus gateway for **ESP32-CAN-X2** from Autosport Labs.
 
 ## Features
 
-- **Dual CAN Bus**: Two independent CAN channels with configurable speeds (125, 250, 500, 1000 kbps)
-- **WiFi Modes**: Access Point (default) or Client mode
-- **CAN Bus Sniffing**: Real-time CAN message monitoring
-- **CANopen Support**: Ready for joystick integration (SDO/PDO)
-- **Serial Menu**: Easy configuration via Serial Monitor
-- **Persistent Settings**: All configurations saved to flash
+- ✅ **Dual CAN Bus**: Two independent CAN channels with configurable speeds (125, 250, 500, 1000 kbps)
+- ✅ **WiFi Modes**: Access Point (default) or Client mode
+- ✅ **Web Interface**: Modern responsive web dashboard for configuration and monitoring
+- ✅ **Real-time Monitoring**: WebSocket-based live CAN message streaming
+- ✅ **CAN Bus Sniffing**: Serial and web-based message monitoring
+- ✅ **CANopen Support**: Ready for joystick integration (SDO/PDO)
+- ✅ **Serial Menu**: Easy configuration via Serial Monitor
+- ✅ **REST API**: Full API for remote configuration
+- ✅ **Persistent Settings**: All configurations saved to flash
 
 ## Default WiFi Settings
 
@@ -49,6 +52,9 @@ ESP32-based CAN bus gateway for **ESP32-CAN-X2** from Autosport Labs.
 Go to **Tools → Manage Libraries** and install:
 
 - **mcp_canbus** by Longan Labs (for MCP2515 controller)
+- **ESPAsyncWebServer** by me-no-dev (for web interface)
+- **AsyncTCP** by me-no-dev (dependency for ESPAsyncWebServer)
+- **ArduinoJson** by Benoit Blanchon (for JSON API)
 
 ### 4. Upload
 
@@ -94,6 +100,60 @@ Go to **Tools → Manage Libraries** and install:
 h. Show this menu
 ===============================
 ```
+
+### 🌐 Web Interface
+
+The gateway includes a modern, responsive web interface accessible from any browser!
+
+**Access the Web Interface:**
+
+1. **Connect to WiFi**:
+   - **AP Mode** (default): Connect to `CANIMEX_GATEWAY` WiFi network
+   - **Client Mode**: Gateway connects to your existing WiFi
+
+2. **Open Browser**: Navigate to the IP address shown in Serial Monitor
+   - **AP Mode**: `http://192.168.4.1`
+   - **Client Mode**: Check Serial Monitor for assigned IP
+
+3. **Web Dashboard Features**:
+   - 📊 **System Status**: Real-time system information and uptime
+   - 📡 **WiFi Configuration**: Change between AP/Client modes
+   - 🔧 **CAN Configuration**: Set CAN bus speeds for both channels
+   - 📡 **Live CAN Monitor**: Real-time CAN message streaming via WebSocket
+   - 📈 **Message Statistics**: Track message counts for each channel
+   - 🔄 **Reset Controls**: Reset to factory defaults
+
+**Screenshot:**
+```
+┌────────────────────────────────────────┐
+│   🚗 CANIMEX Gateway                   │
+│   ESP32-CAN-X2 Dual CAN Bus Interface  │
+│   WiFi: AP | CAN1: Running | CAN2: ✓ │
+├────────────────────────────────────────┤
+│ 📊 System Status  │ 📡 WiFi Config    │
+│ IP: 192.168.4.1   │ Mode: [AP ▼]      │
+│ CAN1: 500 kbps    │ SSID: [_______]   │
+│ CAN2: 500 kbps    │ Pass: [_______]   │
+│ Uptime: 1h 23m    │ [Save Config]     │
+├────────────────────────────────────────┤
+│ 📡 CAN Bus Monitor [✓ Real-time] [Clear]│
+│ ┌────────────────────────────────────┐ │
+│ │ [10:23:45] [CAN1] ID:0x123 [8]    │ │
+│ │ 01 02 03 04 05 06 07 08           │ │
+│ │ [10:23:46] [CAN2] ID:0x456 [4]    │ │
+│ │ AA BB CC DD                       │ │
+│ └────────────────────────────────────┘ │
+│  CAN1: 1,234 msgs  │  CAN2: 567 msgs  │
+└────────────────────────────────────────┘
+```
+
+**API Endpoints:**
+- `GET /api/status` - Get system status (JSON)
+- `POST /api/wifi` - Configure WiFi settings
+- `POST /api/can` - Configure CAN settings
+- `POST /api/monitor` - Toggle real-time monitoring
+- `POST /api/reset` - Reset to defaults
+- `WS /ws` - WebSocket for real-time CAN data
 
 ### WiFi Configuration
 
