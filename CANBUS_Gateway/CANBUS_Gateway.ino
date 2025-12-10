@@ -51,9 +51,9 @@
 // CONFIGURATION STRUCTURES
 // ============================================
 
-enum WiFiMode_t {
-    WIFI_MODE_AP_MODE = 0,
-    WIFI_MODE_CLIENT_MODE = 1
+enum GatewayWiFiMode {
+    GATEWAY_WIFI_AP = 0,
+    GATEWAY_WIFI_CLIENT = 1
 };
 
 enum CANSpeed_t {
@@ -73,7 +73,7 @@ AsyncWebServer server(80);  // Web server on port 80
 AsyncWebSocket ws("/ws");   // WebSocket endpoint
 
 // Configuration variables
-WiFiMode_t wifiMode = WIFI_MODE_AP_MODE;
+GatewayWiFiMode wifiMode = GATEWAY_WIFI_AP;
 String apSSID = "CANIMEX_GATEWAY";
 String apPassword = "Canimex2026";
 String clientSSID = "";
@@ -130,7 +130,7 @@ uint8_t getMCP2515Speed(CANSpeed_t speed) {
 void loadConfig() {
     prefs.begin("gateway", false);
 
-    wifiMode = (WiFiMode_t)prefs.getUChar("wifi_mode", WIFI_MODE_AP_MODE);
+    wifiMode = (GatewayWiFiMode)prefs.getUChar("wifi_mode", GATEWAY_WIFI_AP);
     apSSID = prefs.getString("ap_ssid", "CANIMEX_GATEWAY");
     apPassword = prefs.getString("ap_pass", "Canimex2026");
     clientSSID = prefs.getString("cli_ssid", "");
@@ -171,7 +171,7 @@ void startWiFiClient() {
     if (clientSSID.length() == 0) {
         Serial.println("ERROR: Client SSID not configured!");
         Serial.println("Falling back to AP mode...");
-        wifiMode = WIFI_MODE_AP_MODE;
+        wifiMode = GATEWAY_WIFI_AP;
         startWiFiAP();
         return;
     }
@@ -199,7 +199,7 @@ void startWiFiClient() {
     } else {
         Serial.println("\nERROR: Failed to connect to WiFi!");
         Serial.println("Falling back to AP mode...");
-        wifiMode = WIFI_MODE_AP_MODE;
+        wifiMode = GATEWAY_WIFI_AP;
         startWiFiAP();
     }
 }
@@ -376,8 +376,8 @@ void setupWebServer() {
     server.on("/api/status", HTTP_GET, [](AsyncWebServerRequest *request) {
         StaticJsonDocument<512> doc;
         doc["type"] = "status";
-        doc["ip"] = (wifiMode == WIFI_MODE_AP_MODE) ? WiFi.softAPIP().toString() : WiFi.localIP().toString();
-        doc["wifi_mode"] = (wifiMode == WIFI_MODE_AP_MODE) ? "Access Point" : "Client";
+        doc["ip"] = (wifiMode == GATEWAY_WIFI_AP) ? WiFi.softAPIP().toString() : WiFi.localIP().toString();
+        doc["wifi_mode"] = (wifiMode == GATEWAY_WIFI_AP) ? "Access Point" : "Client";
         doc["wifi_mode_val"] = wifiMode;
 
         const char* speedNames[] = {"125 kbps", "250 kbps", "500 kbps", "1000 kbps"};
@@ -407,14 +407,14 @@ void setupWebServer() {
             DeserializationError error = deserializeJson(doc, data);
 
             if (!error) {
-                WiFiMode_t newMode = (WiFiMode_t)(int)doc["mode"];
+                GatewayWiFiMode newMode = (GatewayWiFiMode)(int)doc["mode"];
                 String ssid = doc["ssid"].as<String>();
                 String pass = doc["password"].as<String>();
 
-                if (newMode == WIFI_MODE_AP_MODE && ssid.length() > 0) {
+                if (newMode == GATEWAY_WIFI_AP && ssid.length() > 0) {
                     apSSID = ssid;
                     apPassword = pass;
-                } else if (newMode == WIFI_MODE_CLIENT_MODE && ssid.length() > 0) {
+                } else if (newMode == GATEWAY_WIFI_CLIENT && ssid.length() > 0) {
                     clientSSID = ssid;
                     clientPassword = pass;
                 }
@@ -482,7 +482,7 @@ void setupWebServer() {
     server.begin();
     Serial.println("Web server started");
     Serial.print("Access at: http://");
-    Serial.println((wifiMode == WIFI_MODE_AP_MODE) ? WiFi.softAPIP().toString() : WiFi.localIP().toString());
+    Serial.println((wifiMode == GATEWAY_WIFI_AP) ? WiFi.softAPIP().toString() : WiFi.localIP().toString());
 }
 
 // ============================================
@@ -555,14 +555,14 @@ void wifiMenu() {
 
     switch (choice) {
         case '1':
-            wifiMode = WIFI_MODE_AP_MODE;
+            wifiMode = GATEWAY_WIFI_AP;
             saveConfig();
             Serial.println("Restarting in AP mode...");
             delay(1000);
             ESP.restart();
             break;
         case '2':
-            wifiMode = WIFI_MODE_CLIENT_MODE;
+            wifiMode = GATEWAY_WIFI_CLIENT;
             saveConfig();
             Serial.println("Restarting in Client mode...");
             delay(1000);
@@ -724,9 +724,9 @@ void snifferMenu() {
 void printStatus() {
     Serial.println("\n========== SYSTEM STATUS ==========");
     Serial.print("WiFi Mode: ");
-    Serial.println((wifiMode == WIFI_MODE_AP_MODE) ? "Access Point" : "Client");
+    Serial.println((wifiMode == GATEWAY_WIFI_AP) ? "Access Point" : "Client");
     Serial.print("IP Address: ");
-    Serial.println((wifiMode == WIFI_MODE_AP_MODE) ? WiFi.softAPIP().toString() : WiFi.localIP().toString());
+    Serial.println((wifiMode == GATEWAY_WIFI_AP) ? WiFi.softAPIP().toString() : WiFi.localIP().toString());
     Serial.println();
     Serial.print("CAN1: ");
     Serial.println(can1Running ? "Running" : "Stopped");
@@ -788,7 +788,7 @@ void setup() {
 
     // Initialize WiFi
     Serial.println("Initializing WiFi...");
-    if (wifiMode == WIFI_MODE_AP_MODE) {
+    if (wifiMode == GATEWAY_WIFI_AP) {
         startWiFiAP();
     } else {
         startWiFiClient();
