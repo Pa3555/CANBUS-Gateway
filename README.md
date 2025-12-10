@@ -1,55 +1,96 @@
-# CANBUS Gateway - ESP32 CAN X2
+# CANBUS Gateway - ESP32-CAN-X2
 
-ESP32-based CAN bus gateway with dual CAN channels, WiFi connectivity, and CANopen joystick support.
+ESP32-based CAN bus gateway for **ESP32-CAN-X2** from Autosport Labs with dual CAN channels, WiFi connectivity, and CANopen joystick support.
 
 ## Hardware
-- **Device**: ESP32 CAN X2 from Autosport Labs
-- **CAN Channels**: 2 independent CAN bus interfaces
+- **Board**: ESP32-CAN-X2 from Autosport Labs
+- **MCU**: ESP32-S3-WROOM-1-N8R8
+  - Dual-core Xtensa LX6 CPU @ 240 MHz
+  - 384 KB ROM, 512 KB SRAM, 8 MB PSRAM
+- **Power**: 5-40V (automotive/industrial grade)
+- **CAN1**: Built-in TWAI controller (GPIO6/GPIO7)
+- **CAN2**: MCP2515 external controller via SPI
 - **Connectivity**: WiFi (AP/Client mode)
 
 ## Features
-- **Dual CAN Bus**: Two independent CAN channels with configurable speeds
-- **WiFi Modes**:
-  - Access Point (AP) mode - Default
-  - Client (Station) mode
-- **CAN Bus Sniffing**: Monitor and log CAN messages
-- **CANopen Support**: SDO/PDO for joystick devices
-- **Configuration Menu**: Serial interface for settings
-- **Persistent Settings**: Configuration saved to flash memory
+- ✅ **Dual CAN Bus**: Two independent CAN channels (125/250/500/1000 kbps)
+- ✅ **WiFi Modes**: Access Point (default) or Client mode
+- ✅ **CAN Bus Sniffing**: Real-time message monitoring
+- ✅ **CANopen Support**: Ready for joystick integration
+- ✅ **Serial Configuration**: Easy menu-driven setup
+- ✅ **Persistent Settings**: All configs saved to flash
 
 ## Default WiFi Settings
 - **Mode**: Access Point (AP)
-- **SSID**: CANIMEX_GATEWAY
-- **Password**: Canimex2026
+- **SSID**: `CANIMEX_GATEWAY`
+- **Password**: `Canimex2026`
 - **IP Address**: 192.168.4.1
 
-## Getting Started
+## Quick Start (Arduino IDE)
 
-### Prerequisites
-- Arduino IDE 2.x or PlatformIO
-- ESP32 board support
-- Required libraries (see platformio.ini or Arduino Libraries section)
+### 1. Install ESP32 Board Support
+Add to Arduino IDE Board Manager:
+```
+https://dl.espressif.com/dl/package_esp32_index.json
+```
 
-### Required Libraries
-- ESP32CAN
-- Preferences (built-in)
-- WiFi (built-in)
-- WebServer (built-in)
+### 2. Install Libraries
+- **mcp_canbus** by Longan Labs
 
-### Installation
-1. Clone this repository
-2. Open in Arduino IDE or PlatformIO
-3. Upload to ESP32 CAN X2 device
+### 3. Select Board
+Tools → Board → **"AutosportLabs ESP32-CAN-X2"**
 
-### Configuration
-Connect via serial monitor (115200 baud) to access the configuration menu:
-- `1` - Configure WiFi mode
-- `2` - Configure CAN bus settings
-- `3` - View current settings
-- `4` - Reset to defaults
+### 4. Upload
+Open `CANBUS_Gateway/CANBUS_Gateway.ino` and upload!
 
-## CAN Bus Configuration
-Both CAN channels support speeds: 10, 20, 50, 100, 125, 250, 500, 1000 kbps
+## Pin Configuration
+
+### CAN1 (Built-in TWAI)
+- **TX**: GPIO7
+- **RX**: GPIO6
+
+### CAN2 (MCP2515)
+- **CS**: GPIO10
+- **MOSI**: GPIO11
+- **CLK**: GPIO12
+- **MISO**: GPIO13
+- **IRQ**: GPIO3
+
+### Other
+- **LED**: GPIO2
+
+## Usage
+
+Connect via Serial Monitor (115200 baud):
+
+```
+========== MAIN MENU ==========
+1. WiFi Configuration
+2. CAN Bus Configuration
+3. CAN Sniffer
+4. View Status
+5. Reset to Defaults
+===============================
+```
+
+### Configuration Options
+- **WiFi Mode**: Switch between AP and Client modes
+- **CAN Speed**: Configure each channel independently (125/250/500/1000 kbps)
+- **CAN Sniffer**: Monitor CAN traffic in real-time
+
+## Documentation
+
+- **[CANBUS_Gateway/README.md](CANBUS_Gateway/README.md)** - Complete Arduino IDE guide
+- **[QUICKSTART.md](QUICKSTART.md)** - 5-minute setup guide
+- **[docs/HARDWARE_SETUP.md](docs/HARDWARE_SETUP.md)** - Wiring and hardware info
+- **[docs/USAGE_GUIDE.md](docs/USAGE_GUIDE.md)** - Detailed features guide
+- **[docs/CANOPEN_REFERENCE.md](docs/CANOPEN_REFERENCE.md)** - CANopen technical details
+
+## Resources
+
+- **Official Wiki**: https://wiki.autosportlabs.com/ESP32-CAN-X2
+- **GitHub Examples**: https://github.com/autosportlabs/ESP32-CAN-X2
+- **Product Page**: https://www.autosportlabs.com/product/esp32-can-x2-dual-can-bus-automotive-grade-development-board/
 
 ## License
 MIT License

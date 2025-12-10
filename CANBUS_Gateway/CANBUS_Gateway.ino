@@ -1,0 +1,661 @@
+/*
+ * CANIMEX Gateway - ESP32-CAN-X2 from Autosport Labs
+ *
+ * Dual CAN bus gateway with WiFi AP/Client mode and CANopen joystick support
+ *
+ * Hardware: ESP32-CAN-X2 (ESP32-S3)
+ * - CAN1: Built-in TWAI controller (GPIO6/GPIO7)
+ * - CAN2: MCP2515 via SPI
+ *
+ * Default WiFi AP:
+ *   SSID: CANIMEX_GATEWAY
+ *   Password: Canimex2026
+ *   IP: 192.168.4.1
+ *
+ * Arduino IDE Setup:
+ * 1. Install ESP32 board support: https://dl.espressif.com/dl/package_esp32_index.json
+ * 2. Select Board: "AutosportLabs ESP32-CAN-X2"
+ * 3. Install library: "mcp_canbus" by Longan Labs
+ * 4. Upload!
+ */
+
+#include <WiFi.h>
+#include <Preferences.h>
+#include <driver/gpio.h>
+#include <driver/twai.h>
+#include <mcp_can.h>
+#include <SPI.h>
+
+// ============================================
+// PIN DEFINITIONS FOR ESP32-CAN-X2
+// ============================================
+// CAN1 - Built-in TWAI Controller
+#define CAN1_TX_PIN GPIO_NUM_7
+#define CAN1_RX_PIN GPIO_NUM_6
+
+// CAN2 - MCP2515 via SPI (Custom SPI pins)
+#define MCP2515_CS   10  // Chip Select
+#define MCP2515_MOSI 11  // Master Out Slave In
+#define MCP2515_CLK  12  // Clock
+#define MCP2515_MISO 13  // Master In Slave Out
+#define MCP2515_IRQ  3   // Interrupt
+
+// LED
+#define LED_BUILTIN 2
+
+// ============================================
+// CONFIGURATION STRUCTURES
+// ============================================
+
+enum WiFiMode_t {
+    WIFI_MODE_AP_MODE = 0,
+    WIFI_MODE_CLIENT_MODE = 1
+};
+
+enum CANSpeed_t {
+    CAN_SPEED_125KBPS = 0,
+    CAN_SPEED_250KBPS = 1,
+    CAN_SPEED_500KBPS = 2,
+    CAN_SPEED_1000KBPS = 3
+};
+
+// ============================================
+// GLOBAL OBJECTS
+// ============================================
+
+Preferences prefs;
+MCP_CAN CAN2(MCP2515_CS);  // CAN2 via MCP2515
+
+// Configuration variables
+WiFiMode_t wifiMode = WIFI_MODE_AP_MODE;
+String apSSID = "CANIMEX_GATEWAY";
+String apPassword = "Canimex2026";
+String clientSSID = "";
+String clientPassword = "";
+CANSpeed_t can1Speed = CAN_SPEED_500KBPS;
+CANSpeed_t can2Speed = CAN_SPEED_500KBPS;
+
+bool can1Running = false;
+bool can2Running = false;
+bool sniffingEnabled = false;
+uint8_t sniffingChannel = 0;
+
+unsigned long lastHeartbeat = 0;
+
+// ============================================
+// CAN SPEED CONFIGURATION
+// ============================================
+
+twai_timing_config_t getCANTimingConfig(CANSpeed_t speed) {
+    switch (speed) {
+        case CAN_SPEED_125KBPS:
+            return TWAI_TIMING_CONFIG_125KBITS();
+        case CAN_SPEED_250KBPS:
+            return TWAI_TIMING_CONFIG_250KBITS();
+        case CAN_SPEED_1000KBPS:
+            return TWAI_TIMING_CONFIG_1MBITS();
+        case CAN_SPEED_500KBPS:
+        default:
+            return TWAI_TIMING_CONFIG_500KBITS();
+    }
+}
+
+uint8_t getMCP2515Speed(CANSpeed_t speed) {
+    switch (speed) {
+        case CAN_SPEED_125KBPS:
+            return CAN_125KBPS;
+        case CAN_SPEED_250KBPS:
+            return CAN_250KBPS;
+        case CAN_SPEED_1000KBPS:
+            return CAN_1000KBPS;
+        case CAN_SPEED_500KBPS:
+        default:
+            return CAN_500KBPS;
+    }
+}
+
+// ============================================
+// WIFI FUNCTIONS
+// ============================================
+
+void loadConfig() {
+    prefs.begin("gateway", false);
+
+    wifiMode = (WiFiMode_t)prefs.getUChar("wifi_mode", WIFI_MODE_AP_MODE);
+    apSSID = prefs.getString("ap_ssid", "CANIMEX_GATEWAY");
+    apPassword = prefs.getString("ap_pass", "Canimex2026");
+    clientSSID = prefs.getString("cli_ssid", "");
+    clientPassword = prefs.getString("cli_pass", "");
+    can1Speed = (CANSpeed_t)prefs.getUChar("can1_speed", CAN_SPEED_500KBPS);
+    can2Speed = (CANSpeed_t)prefs.getUChar("can2_speed", CAN_SPEED_500KBPS);
+
+    Serial.println("Configuration loaded from flash");
+}
+
+void saveConfig() {
+    prefs.putUChar("wifi_mode", wifiMode);
+    prefs.putString("ap_ssid", apSSID);
+    prefs.putString("ap_pass", apPassword);
+    prefs.putString("cli_ssid", clientSSID);
+    prefs.putString("cli_pass", clientPassword);
+    prefs.putUChar("can1_speed", can1Speed);
+    prefs.putUChar("can2_speed", can2Speed);
+
+    Serial.println("Configuration saved to flash");
+}
+
+void startWiFiAP() {
+    WiFi.mode(WIFI_AP);
+    WiFi.softAP(apSSID.c_str(), apPassword.c_str());
+
+    Serial.println("\n=== Access Point Started ===");
+    Serial.print("SSID: ");
+    Serial.println(apSSID);
+    Serial.print("Password: ");
+    Serial.println(apPassword);
+    Serial.print("IP Address: ");
+    Serial.println(WiFi.softAPIP());
+    Serial.println("============================\n");
+}
+
+void startWiFiClient() {
+    if (clientSSID.length() == 0) {
+        Serial.println("ERROR: Client SSID not configured!");
+        Serial.println("Falling back to AP mode...");
+        wifiMode = WIFI_MODE_AP_MODE;
+        startWiFiAP();
+        return;
+    }
+
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(clientSSID.c_str(), clientPassword.c_str());
+
+    Serial.print("Connecting to WiFi: ");
+    Serial.println(clientSSID);
+
+    int attempts = 0;
+    while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+        delay(500);
+        Serial.print(".");
+        attempts++;
+    }
+
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.println("\n=== WiFi Client Connected ===");
+        Serial.print("SSID: ");
+        Serial.println(clientSSID);
+        Serial.print("IP Address: ");
+        Serial.println(WiFi.localIP());
+        Serial.println("=============================\n");
+    } else {
+        Serial.println("\nERROR: Failed to connect to WiFi!");
+        Serial.println("Falling back to AP mode...");
+        wifiMode = WIFI_MODE_AP_MODE;
+        startWiFiAP();
+    }
+}
+
+// ============================================
+// CAN1 FUNCTIONS (TWAI)
+// ============================================
+
+bool startCAN1() {
+    twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT(CAN1_TX_PIN, CAN1_RX_PIN, TWAI_MODE_NORMAL);
+    g_config.tx_queue_len = 20;
+    g_config.rx_queue_len = 20;
+
+    twai_timing_config_t t_config = getCANTimingConfig(can1Speed);
+    twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
+
+    if (twai_driver_install(&g_config, &t_config, &f_config) == ESP_OK) {
+        if (twai_start() == ESP_OK) {
+            can1Running = true;
+            Serial.println("CAN1: Started successfully");
+            return true;
+        }
+    }
+
+    Serial.println("ERROR: Failed to start CAN1");
+    return false;
+}
+
+void stopCAN1() {
+    if (can1Running) {
+        twai_stop();
+        twai_driver_uninstall();
+        can1Running = false;
+        Serial.println("CAN1: Stopped");
+    }
+}
+
+bool sendCAN1(uint32_t id, uint8_t* data, uint8_t len) {
+    if (!can1Running) return false;
+
+    twai_message_t message;
+    message.identifier = id;
+    message.data_length_code = len;
+    message.flags = TWAI_MSG_FLAG_NONE;
+
+    for (int i = 0; i < len && i < 8; i++) {
+        message.data[i] = data[i];
+    }
+
+    return (twai_transmit(&message, pdMS_TO_TICKS(100)) == ESP_OK);
+}
+
+bool receiveCAN1(uint32_t& id, uint8_t* data, uint8_t& len) {
+    if (!can1Running) return false;
+
+    twai_message_t message;
+    if (twai_receive(&message, 0) == ESP_OK) {
+        id = message.identifier;
+        len = message.data_length_code;
+
+        for (int i = 0; i < len && i < 8; i++) {
+            data[i] = message.data[i];
+        }
+
+        return true;
+    }
+
+    return false;
+}
+
+// ============================================
+// CAN2 FUNCTIONS (MCP2515)
+// ============================================
+
+bool startCAN2() {
+    // Configure SPI with custom pins for MCP2515
+    SPI.begin(MCP2515_CLK, MCP2515_MISO, MCP2515_MOSI, MCP2515_CS);
+
+    uint8_t mcp2515_speed = getMCP2515Speed(can2Speed);
+
+    if (CAN2.begin(MCP_ANY, mcp2515_speed, MCP_8MHZ) == CAN_OK) {
+        CAN2.setMode(MCP_NORMAL);
+        can2Running = true;
+        Serial.println("CAN2: Started successfully");
+        return true;
+    }
+
+    Serial.println("ERROR: Failed to start CAN2 (MCP2515)");
+    return false;
+}
+
+bool sendCAN2(uint32_t id, uint8_t* data, uint8_t len) {
+    if (!can2Running) return false;
+
+    return (CAN2.sendMsgBuf(id, 0, len, data) == CAN_OK);
+}
+
+bool receiveCAN2(uint32_t& id, uint8_t* data, uint8_t& len) {
+    if (!can2Running) return false;
+
+    if (CAN2.checkReceive() == CAN_MSGAVAIL) {
+        CAN2.readMsgBuf(&id, &len, data);
+        return true;
+    }
+
+    return false;
+}
+
+// ============================================
+// MENU SYSTEM
+// ============================================
+
+void displayMenu() {
+    Serial.println("\n========== MAIN MENU ==========");
+    Serial.println("1. WiFi Configuration");
+    Serial.println("2. CAN Bus Configuration");
+    Serial.println("3. CAN Sniffer");
+    Serial.println("4. View Status");
+    Serial.println("5. Reset to Defaults");
+    Serial.println("h. Show this menu");
+    Serial.println("===============================");
+    Serial.print("\nEnter choice: ");
+}
+
+void handleMenu() {
+    if (!Serial.available()) return;
+
+    char choice = Serial.read();
+    while (Serial.available()) Serial.read(); // Clear buffer
+
+    if (choice == '\n' || choice == '\r') return;
+
+    Serial.println(choice);
+
+    switch (choice) {
+        case '1':
+            wifiMenu();
+            break;
+        case '2':
+            canMenu();
+            break;
+        case '3':
+            snifferMenu();
+            break;
+        case '4':
+            printStatus();
+            displayMenu();
+            break;
+        case '5':
+            resetConfig();
+            break;
+        case 'h':
+        case 'H':
+            displayMenu();
+            break;
+        default:
+            Serial.println("Invalid choice!");
+            displayMenu();
+            break;
+    }
+}
+
+void wifiMenu() {
+    Serial.println("\n===== WiFi Configuration =====");
+    Serial.println("1. Switch to AP Mode");
+    Serial.println("2. Switch to Client Mode");
+    Serial.println("3. Configure AP Credentials");
+    Serial.println("4. Configure Client Credentials");
+    Serial.println("5. Back to Main Menu");
+    Serial.print("\nEnter choice: ");
+
+    while (!Serial.available()) delay(10);
+    char choice = Serial.read();
+    while (Serial.available()) Serial.read();
+    Serial.println(choice);
+
+    switch (choice) {
+        case '1':
+            wifiMode = WIFI_MODE_AP_MODE;
+            saveConfig();
+            Serial.println("Restarting in AP mode...");
+            delay(1000);
+            ESP.restart();
+            break;
+        case '2':
+            wifiMode = WIFI_MODE_CLIENT_MODE;
+            saveConfig();
+            Serial.println("Restarting in Client mode...");
+            delay(1000);
+            ESP.restart();
+            break;
+        case '3':
+            configureAPCredentials();
+            break;
+        case '4':
+            configureClientCredentials();
+            break;
+        case '5':
+            displayMenu();
+            return;
+    }
+
+    wifiMenu();
+}
+
+void configureAPCredentials() {
+    Serial.println("\n=== Configure AP Credentials ===");
+    Serial.print("Enter SSID: ");
+    apSSID = readLine();
+
+    Serial.print("Enter Password (min 8 chars): ");
+    apPassword = readLine();
+
+    if (apPassword.length() >= 8) {
+        saveConfig();
+        Serial.println("AP credentials updated!");
+    } else {
+        Serial.println("Error: Password must be at least 8 characters!");
+    }
+}
+
+void configureClientCredentials() {
+    Serial.println("\n=== Configure Client Credentials ===");
+    Serial.print("Enter SSID: ");
+    clientSSID = readLine();
+
+    Serial.print("Enter Password: ");
+    clientPassword = readLine();
+
+    saveConfig();
+    Serial.println("Client credentials updated!");
+}
+
+void canMenu() {
+    Serial.println("\n===== CAN Bus Configuration =====");
+    Serial.println("1. Configure CAN1 Speed");
+    Serial.println("2. Configure CAN2 Speed");
+    Serial.println("3. Back to Main Menu");
+    Serial.print("\nEnter choice: ");
+
+    while (!Serial.available()) delay(10);
+    char choice = Serial.read();
+    while (Serial.available()) Serial.read();
+    Serial.println(choice);
+
+    switch (choice) {
+        case '1':
+            configureCANSpeed(1);
+            break;
+        case '2':
+            configureCANSpeed(2);
+            break;
+        case '3':
+            displayMenu();
+            return;
+    }
+
+    canMenu();
+}
+
+void configureCANSpeed(uint8_t channel) {
+    Serial.printf("\n=== Configure CAN%d Speed ===\n", channel);
+    Serial.println("1. 125 kbps");
+    Serial.println("2. 250 kbps");
+    Serial.println("3. 500 kbps");
+    Serial.println("4. 1000 kbps");
+    Serial.print("\nEnter choice: ");
+
+    while (!Serial.available()) delay(10);
+    char choice = Serial.read();
+    while (Serial.available()) Serial.read();
+    Serial.println(choice);
+
+    CANSpeed_t newSpeed = CAN_SPEED_500KBPS;
+    switch (choice) {
+        case '1': newSpeed = CAN_SPEED_125KBPS; break;
+        case '2': newSpeed = CAN_SPEED_250KBPS; break;
+        case '3': newSpeed = CAN_SPEED_500KBPS; break;
+        case '4': newSpeed = CAN_SPEED_1000KBPS; break;
+        default:
+            Serial.println("Invalid choice!");
+            return;
+    }
+
+    if (channel == 1) {
+        can1Speed = newSpeed;
+        stopCAN1();
+        startCAN1();
+    } else {
+        can2Speed = newSpeed;
+        can2Running = false;
+        startCAN2();
+    }
+
+    saveConfig();
+    Serial.printf("CAN%d speed updated!\n", channel);
+}
+
+void snifferMenu() {
+    Serial.println("\n===== CAN Sniffer =====");
+
+    if (sniffingEnabled) {
+        Serial.println("Sniffer is RUNNING");
+        Serial.printf("Monitoring: CAN%d\n", sniffingChannel + 1);
+        Serial.println("\n1. Stop Sniffer");
+        Serial.println("2. Back to Main Menu");
+    } else {
+        Serial.println("Sniffer is STOPPED");
+        Serial.println("\n1. Start Sniffer on CAN1");
+        Serial.println("2. Start Sniffer on CAN2");
+        Serial.println("3. Back to Main Menu");
+    }
+
+    Serial.print("\nEnter choice: ");
+
+    while (!Serial.available()) delay(10);
+    char choice = Serial.read();
+    while (Serial.available()) Serial.read();
+    Serial.println(choice);
+
+    if (sniffingEnabled) {
+        if (choice == '1') {
+            sniffingEnabled = false;
+            Serial.println("Sniffer stopped");
+        }
+    } else {
+        if (choice == '1') {
+            sniffingEnabled = true;
+            sniffingChannel = 0;
+            Serial.println("Starting sniffer on CAN1...");
+        } else if (choice == '2') {
+            sniffingEnabled = true;
+            sniffingChannel = 1;
+            Serial.println("Starting sniffer on CAN2...");
+        }
+    }
+
+    if (choice == '2' || choice == '3') {
+        displayMenu();
+    } else {
+        snifferMenu();
+    }
+}
+
+void printStatus() {
+    Serial.println("\n========== SYSTEM STATUS ==========");
+    Serial.print("WiFi Mode: ");
+    Serial.println((wifiMode == WIFI_MODE_AP_MODE) ? "Access Point" : "Client");
+    Serial.print("IP Address: ");
+    Serial.println((wifiMode == WIFI_MODE_AP_MODE) ? WiFi.softAPIP().toString() : WiFi.localIP().toString());
+    Serial.println();
+    Serial.print("CAN1: ");
+    Serial.println(can1Running ? "Running" : "Stopped");
+    Serial.print("CAN2: ");
+    Serial.println(can2Running ? "Running" : "Stopped");
+    Serial.println("===================================\n");
+}
+
+void resetConfig() {
+    Serial.println("\nResetting all settings to defaults...");
+    prefs.clear();
+    Serial.println("Reset complete! Rebooting...");
+    delay(1000);
+    ESP.restart();
+}
+
+String readLine() {
+    String input = "";
+    while (true) {
+        if (Serial.available()) {
+            char c = Serial.read();
+            if (c == '\n' || c == '\r') {
+                if (input.length() > 0) {
+                    Serial.println();
+                    return input;
+                }
+            } else if (c == 8 || c == 127) { // Backspace
+                if (input.length() > 0) {
+                    input.remove(input.length() - 1);
+                    Serial.print("\b \b");
+                }
+            } else {
+                input += c;
+                Serial.print(c);
+            }
+        }
+        delay(10);
+    }
+}
+
+// ============================================
+// SETUP
+// ============================================
+
+void setup() {
+    Serial.begin(115200);
+    delay(1000);
+
+    pinMode(LED_BUILTIN, OUTPUT);
+    digitalWrite(LED_BUILTIN, LOW);
+
+    Serial.println("\n\n========================================");
+    Serial.println("     CANIMEX GATEWAY v1.0");
+    Serial.println("     ESP32-CAN-X2 Dual CAN Bus");
+    Serial.println("========================================\n");
+
+    // Load configuration
+    loadConfig();
+
+    // Initialize WiFi
+    Serial.println("Initializing WiFi...");
+    if (wifiMode == WIFI_MODE_AP_MODE) {
+        startWiFiAP();
+    } else {
+        startWiFiClient();
+    }
+
+    // Initialize CAN buses
+    Serial.println("Initializing CAN buses...");
+    startCAN1();
+    startCAN2();
+
+    Serial.println("\n========================================");
+    Serial.println("    System Ready!");
+    Serial.println("========================================\n");
+
+    printStatus();
+    displayMenu();
+}
+
+// ============================================
+// LOOP
+// ============================================
+
+void loop() {
+    // Handle menu input
+    handleMenu();
+
+    // Handle CAN sniffing
+    if (sniffingEnabled) {
+        uint32_t id;
+        uint8_t data[8];
+        uint8_t len;
+
+        bool hasMessage = false;
+        if (sniffingChannel == 0) {
+            hasMessage = receiveCAN1(id, data, len);
+        } else {
+            hasMessage = receiveCAN2(id, data, len);
+        }
+
+        if (hasMessage) {
+            Serial.printf("[%lu] [CAN%d] %08X [%d] ", millis(), sniffingChannel + 1, id, len);
+            for (int i = 0; i < len; i++) {
+                Serial.printf("%02X ", data[i]);
+            }
+            Serial.println();
+        }
+    }
+
+    // Heartbeat LED
+    if (millis() - lastHeartbeat >= 1000) {
+        lastHeartbeat = millis();
+        digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
+    }
+
+    delay(1);
+}
