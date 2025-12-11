@@ -298,6 +298,27 @@ const char index_html[] PROGMEM = R"rawliteral(
                 </div>
             </div>
 
+            <!-- System Resources -->
+            <div class="card">
+                <h2>🖥️ System Resources</h2>
+                <div class="info-row">
+                    <span class="info-label">Core 0 Load</span>
+                    <span class="info-value" id="core0-load">0%</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Core 1 Load</span>
+                    <span class="info-value" id="core1-load">0%</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Free Heap</span>
+                    <span class="info-value" id="heap-free">0 KB</span>
+                </div>
+                <div class="info-row" id="psram-section" style="display:none;">
+                    <span class="info-label">PSRAM Usage</span>
+                    <span class="info-value" id="psram-usage">N/A</span>
+                </div>
+            </div>
+
             <!-- WiFi Configuration -->
             <div class="card">
                 <h2>📡 WiFi Configuration</h2>
@@ -425,6 +446,22 @@ const char index_html[] PROGMEM = R"rawliteral(
 
             document.getElementById('can2-status').textContent = 'CAN2: ' + (data.can2_running ? 'Running' : 'Stopped');
             document.getElementById('can2-status').className = 'status-badge ' + (data.can2_running ? 'status-online' : 'status-offline');
+
+            // Update system resources
+            document.getElementById('core0-load').textContent = data.core0_load.toFixed(1) + '%';
+            document.getElementById('core1-load').textContent = data.core1_load.toFixed(1) + '%';
+            document.getElementById('heap-free').textContent = (data.heap_free / 1024).toFixed(1) + ' KB';
+
+            // Update PSRAM if available
+            if (data.psram_available) {
+                document.getElementById('psram-section').style.display = 'flex';
+                const psramUsedMB = (data.psram_used / 1048576).toFixed(2);
+                const psramTotalMB = (data.psram_total / 1048576).toFixed(2);
+                const psramPct = data.psram_usage_pct.toFixed(1);
+                document.getElementById('psram-usage').textContent = psramUsedMB + ' / ' + psramTotalMB + ' MB (' + psramPct + '%)';
+            } else {
+                document.getElementById('psram-section').style.display = 'none';
+            }
 
             // Update form values
             document.getElementById('wifi-mode-select').value = data.wifi_mode_val;

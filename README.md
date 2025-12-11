@@ -1,6 +1,6 @@
-# CANBUS Gateway - ESP32-CAN-X2
+# CANBUS Gateway - ESP32-CAN-X2 v2.0
 
-ESP32-based CAN bus gateway for **ESP32-CAN-X2** from Autosport Labs with dual CAN channels, WiFi connectivity, and CANopen joystick support.
+ESP32-based CAN bus gateway for **ESP32-CAN-X2** from Autosport Labs with dual CAN channels, WiFi connectivity, dual-core processing, and PSRAM support.
 
 ## Hardware
 - **Board**: ESP32-CAN-X2 from Autosport Labs
@@ -13,6 +13,8 @@ ESP32-based CAN bus gateway for **ESP32-CAN-X2** from Autosport Labs with dual C
 - **Connectivity**: WiFi (AP/Client mode)
 
 ## Features
+
+### Core Functionality
 - ✅ **Dual CAN Bus**: Two independent CAN channels (125/250/500/1000 kbps)
 - ✅ **WiFi Modes**: Access Point (default) or Client mode
 - ✅ **Web Interface**: Modern responsive dashboard with real-time monitoring
@@ -22,6 +24,16 @@ ESP32-based CAN bus gateway for **ESP32-CAN-X2** from Autosport Labs with dual C
 - ✅ **Serial Configuration**: Easy menu-driven setup
 - ✅ **REST API**: Full JSON API for remote configuration
 - ✅ **Persistent Settings**: All configs saved to flash
+
+### Performance Optimizations (v2.0)
+- 🚀 **Dual-Core Architecture**:
+  - Core 0: Network & WebSocket handling
+  - Core 1: Dedicated CAN bus processing
+- 🚀 **PSRAM Support**: 8MB PSRAM for large message buffers
+  - 100 message queue (with PSRAM) vs 20 (without)
+  - Future-ready for data logging and advanced features
+- 🚀 **FreeRTOS Tasks**: Non-blocking parallel processing
+- 🚀 **Real-time Stats**: Core load and memory usage monitoring
 
 ## Default WiFi Settings
 - **Mode**: Access Point (AP)
@@ -43,8 +55,9 @@ https://dl.espressif.com/dl/package_esp32_index.json
 - **AsyncTCP** by me-no-dev
 - **ArduinoJson** by Benoit Blanchon
 
-### 3. Select Board
-Tools → Board → **"AutosportLabs ESP32-CAN-X2"**
+### 3. Select Board and Enable PSRAM
+- Tools → Board → **"ESP32S3 Dev Module"** or **"AutosportLabs ESP32-CAN-X2"**
+- Tools → PSRAM → **"OPI PSRAM"** (enables 8MB PSRAM support)
 
 ### 4. Upload
 Open `CANBUS_Gateway/CANBUS_Gateway.ino` and upload!

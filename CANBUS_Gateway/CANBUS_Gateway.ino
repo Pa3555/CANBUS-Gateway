@@ -63,6 +63,15 @@ enum CANSpeed_t {
     CAN_SPEED_1000KBPS = 3
 };
 
+// CAN Message structure for queue
+struct CANMessage {
+    uint8_t channel;     // 1 or 2
+    uint32_t id;
+    uint8_t len;
+    uint8_t data[8];
+    uint32_t timestamp;
+};
+
 // ============================================
 // GLOBAL OBJECTS
 // ============================================
@@ -90,6 +99,32 @@ bool webMonitoringEnabled = false;
 unsigned long lastHeartbeat = 0;
 unsigned long can1MessageCount = 0;
 unsigned long can2MessageCount = 0;
+
+// ============================================
+// DUAL-CORE & PSRAM CONFIGURATION
+// ============================================
+
+// FreeRTOS Queues for inter-core communication
+QueueHandle_t canToWebQueue = NULL;    // CAN messages to WebSocket
+QueueHandle_t serialOutputQueue = NULL; // Messages for serial output
+
+// Task handles
+TaskHandle_t canTaskHandle = NULL;
+TaskHandle_t networkTaskHandle = NULL;
+
+// Mutex for shared resources
+SemaphoreHandle_t configMutex = NULL;
+
+// PSRAM statistics
+size_t psramTotal = 0;
+size_t psramUsed = 0;
+bool psramAvailable = false;
+
+// Core statistics
+uint32_t core0IdleTime = 0;
+uint32_t core1IdleTime = 0;
+float core0Load = 0.0;
+float core1Load = 0.0;
 
 // ============================================
 // CAN SPEED CONFIGURATION
@@ -374,7 +409,7 @@ void setupWebServer() {
 
     // API: Get status
     server.on("/api/status", HTTP_GET, [](AsyncWebServerRequest *request) {
-        StaticJsonDocument<512> doc;
+        StaticJsonDocument<768> doc;
         doc["type"] = "status";
         doc["ip"] = (wifiMode == GATEWAY_WIFI_AP) ? WiFi.softAPIP().toString() : WiFi.localIP().toString();
         doc["wifi_mode"] = (wifiMode == GATEWAY_WIFI_AP) ? "Access Point" : "Client";
@@ -394,6 +429,23 @@ void setupWebServer() {
         char uptimeStr[32];
         sprintf(uptimeStr, "%luh %lum %lus", uptime / 3600, (uptime % 3600) / 60, uptime % 60);
         doc["uptime"] = uptimeStr;
+
+        // PSRAM stats
+        doc["psram_available"] = psramAvailable;
+        if (psramAvailable) {
+            doc["psram_total"] = psramTotal;
+            doc["psram_used"] = psramUsed;
+            doc["psram_free"] = psramTotal - psramUsed;
+            doc["psram_usage_pct"] = (psramUsed * 100.0) / psramTotal;
+        }
+
+        // Core stats
+        doc["core0_load"] = core0Load;
+        doc["core1_load"] = core1Load;
+
+        // Free heap
+        doc["heap_free"] = ESP.getFreeHeap();
+        doc["heap_total"] = ESP.getHeapSize();
 
         String jsonString;
         serializeJson(doc, jsonString);
@@ -768,6 +820,151 @@ String readLine() {
 }
 
 // ============================================
+// PSRAM & DUAL-CORE FUNCTIONS
+// ============================================
+
+void initPSRAM() {
+    if (psramFound()) {
+        psramAvailable = true;
+        psramTotal = ESP.getPsramSize();
+        Serial.println("PSRAM: Detected");
+        Serial.printf("PSRAM Total: %d bytes (%.2f MB)\n", psramTotal, psramTotal / 1048576.0);
+    } else {
+        psramAvailable = false;
+        Serial.println("PSRAM: Not available");
+    }
+}
+
+void updateCoreStats() {
+    // Update core load estimation
+    static uint32_t lastCheck = 0;
+    uint32_t now = millis();
+
+    if (now - lastCheck > 1000) {
+        // Estimate load based on task stack high water marks
+        // Lower high water mark = more stack usage = higher load
+        UBaseType_t core0Stack = uxTaskGetStackHighWaterMark(networkTaskHandle);
+        UBaseType_t core1Stack = uxTaskGetStackHighWaterMark(canTaskHandle);
+
+        // Convert to percentage (inverse - more used = higher load)
+        // This is a rough estimate, not precise CPU utilization
+        core0Load = ((8192 - core0Stack) * 100.0) / 8192.0;
+        core1Load = ((8192 - core1Stack) * 100.0) / 8192.0;
+
+        // Clamp values
+        if (core0Load < 0) core0Load = 0;
+        if (core0Load > 100) core0Load = 100;
+        if (core1Load < 0) core1Load = 0;
+        if (core1Load > 100) core1Load = 100;
+
+        lastCheck = now;
+    }
+
+    // Update PSRAM usage
+    if (psramAvailable) {
+        psramUsed = psramTotal - ESP.getFreePsram();
+    }
+}
+
+// ============================================
+// DUAL-CORE TASKS
+// ============================================
+
+// Task for CAN bus processing (Core 1 - Application CPU)
+void canProcessingTask(void* parameter) {
+    CANMessage msg;
+    uint32_t id;
+    uint8_t data[8];
+    uint8_t len;
+
+    Serial.println("[Core 1] CAN processing task started");
+
+    while (true) {
+        // Process CAN1 (TWAI)
+        if (receiveCAN1(id, data, len)) {
+            can1MessageCount++;
+
+            // Prepare message for queues
+            msg.channel = 1;
+            msg.id = id;
+            msg.len = len;
+            msg.timestamp = millis();
+            memcpy(msg.data, data, len);
+
+            // Send to web queue if monitoring enabled
+            if (webMonitoringEnabled && canToWebQueue != NULL) {
+                xQueueSend(canToWebQueue, &msg, 0);
+            }
+
+            // Send to serial queue if sniffing enabled
+            if (sniffingEnabled && sniffingChannel == 0 && serialOutputQueue != NULL) {
+                xQueueSend(serialOutputQueue, &msg, 0);
+            }
+        }
+
+        // Process CAN2 (MCP2515)
+        if (receiveCAN2(id, data, len)) {
+            can2MessageCount++;
+
+            // Prepare message for queues
+            msg.channel = 2;
+            msg.id = id;
+            msg.len = len;
+            msg.timestamp = millis();
+            memcpy(msg.data, data, len);
+
+            // Send to web queue if monitoring enabled
+            if (webMonitoringEnabled && canToWebQueue != NULL) {
+                xQueueSend(canToWebQueue, &msg, 0);
+            }
+
+            // Send to serial queue if sniffing enabled
+            if (sniffingEnabled && sniffingChannel == 1 && serialOutputQueue != NULL) {
+                xQueueSend(serialOutputQueue, &msg, 0);
+            }
+        }
+
+        // Small delay to prevent CPU hogging
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+}
+
+// Task for network and WebSocket handling (Core 0 - Protocol CPU)
+void networkTask(void* parameter) {
+    CANMessage msg;
+
+    Serial.println("[Core 0] Network task started");
+
+    while (true) {
+        // Process messages from CAN queue to WebSocket
+        while (canToWebQueue != NULL && xQueueReceive(canToWebQueue, &msg, 0) == pdTRUE) {
+            if (ws.count() > 0) {
+                sendCANMessageToWeb(msg.channel, msg.id, msg.data, msg.len);
+            }
+        }
+
+        // Process messages for serial output
+        while (serialOutputQueue != NULL && xQueueReceive(serialOutputQueue, &msg, 0) == pdTRUE) {
+            Serial.printf("[%lu] [CAN%d] %08X [%d] ",
+                msg.timestamp, msg.channel, msg.id, msg.len);
+            for (int i = 0; i < msg.len; i++) {
+                Serial.printf("%02X ", msg.data[i]);
+            }
+            Serial.println();
+        }
+
+        // Cleanup WebSocket connections
+        ws.cleanupClients();
+
+        // Update statistics
+        updateCoreStats();
+
+        // Longer delay for network task
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
+
+// ============================================
 // SETUP
 // ============================================
 
@@ -779,9 +976,33 @@ void setup() {
     digitalWrite(LED_BUILTIN, LOW);
 
     Serial.println("\n\n========================================");
-    Serial.println("     CANIMEX GATEWAY v1.0");
+    Serial.println("     CANIMEX GATEWAY v2.0");
     Serial.println("     ESP32-CAN-X2 Dual CAN Bus");
+    Serial.println("     Dual-Core + PSRAM Edition");
     Serial.println("========================================\n");
+
+    // Initialize PSRAM
+    Serial.println("Checking PSRAM...");
+    initPSRAM();
+
+    // Create FreeRTOS queues
+    Serial.println("Creating FreeRTOS queues...");
+    if (psramAvailable) {
+        // Use PSRAM for large queues
+        canToWebQueue = xQueueCreate(100, sizeof(CANMessage));
+        serialOutputQueue = xQueueCreate(50, sizeof(CANMessage));
+    } else {
+        // Smaller queues for regular RAM
+        canToWebQueue = xQueueCreate(20, sizeof(CANMessage));
+        serialOutputQueue = xQueueCreate(10, sizeof(CANMessage));
+    }
+
+    // Create mutex for config access
+    configMutex = xSemaphoreCreateMutex();
+
+    Serial.printf("Queue sizes: Web=%d, Serial=%d\n",
+        psramAvailable ? 100 : 20,
+        psramAvailable ? 50 : 10);
 
     // Load configuration
     loadConfig();
@@ -803,6 +1024,34 @@ void setup() {
     Serial.println("Initializing Web Server...");
     setupWebServer();
 
+    // Start dual-core tasks
+    Serial.println("\nStarting dual-core tasks...");
+
+    // CAN processing task on Core 1 (Application CPU)
+    xTaskCreatePinnedToCore(
+        canProcessingTask,   // Task function
+        "CANTask",          // Task name
+        8192,               // Stack size (bytes)
+        NULL,               // Parameters
+        2,                  // Priority (higher = more important)
+        &canTaskHandle,     // Task handle
+        1                   // Core 1
+    );
+
+    // Network task on Core 0 (Protocol CPU)
+    xTaskCreatePinnedToCore(
+        networkTask,        // Task function
+        "NetworkTask",      // Task name
+        8192,               // Stack size (bytes)
+        NULL,               // Parameters
+        1,                  // Priority
+        &networkTaskHandle, // Task handle
+        0                   // Core 0
+    );
+
+    Serial.println("Core 0: Network & WebSocket");
+    Serial.println("Core 1: CAN Processing");
+
     Serial.println("\n========================================");
     Serial.println("    System Ready!");
     Serial.println("========================================\n");
@@ -816,50 +1065,8 @@ void setup() {
 // ============================================
 
 void loop() {
-    // Clean up WebSocket connections
-    ws.cleanupClients();
-
-    // Handle menu input
+    // Handle menu input (tasks handle CAN processing and networking)
     handleMenu();
-
-    // Handle CAN message reception (for both serial sniffer and web monitoring)
-    uint32_t id;
-    uint8_t data[8];
-    uint8_t len;
-
-    // Check CAN1
-    if (receiveCAN1(id, data, len)) {
-        can1MessageCount++;
-
-        // Send to serial if sniffing is enabled on CAN1
-        if (sniffingEnabled && sniffingChannel == 0) {
-            Serial.printf("[%lu] [CAN1] %08X [%d] ", millis(), id, len);
-            for (int i = 0; i < len; i++) {
-                Serial.printf("%02X ", data[i]);
-            }
-            Serial.println();
-        }
-
-        // Send to web clients
-        sendCANMessageToWeb(1, id, data, len);
-    }
-
-    // Check CAN2
-    if (receiveCAN2(id, data, len)) {
-        can2MessageCount++;
-
-        // Send to serial if sniffing is enabled on CAN2
-        if (sniffingEnabled && sniffingChannel == 1) {
-            Serial.printf("[%lu] [CAN2] %08X [%d] ", millis(), id, len);
-            for (int i = 0; i < len; i++) {
-                Serial.printf("%02X ", data[i]);
-            }
-            Serial.println();
-        }
-
-        // Send to web clients
-        sendCANMessageToWeb(2, id, data, len);
-    }
 
     // Heartbeat LED
     if (millis() - lastHeartbeat >= 1000) {
@@ -867,5 +1074,5 @@ void loop() {
         digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
     }
 
-    delay(1);
+    delay(10);
 }
