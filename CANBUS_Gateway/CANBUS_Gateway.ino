@@ -115,6 +115,9 @@ TaskHandle_t networkTaskHandle = NULL;
 // Mutex for shared resources
 SemaphoreHandle_t configMutex = NULL;
 
+// Web server initialization flag
+volatile bool webServerReady = false;
+
 // PSRAM statistics
 size_t psramTotal = 0;
 size_t psramUsed = 0;
@@ -938,6 +941,12 @@ void networkTask(void* parameter) {
 
     Serial.println("[Core 0] Network task started");
 
+    // CRITICAL: Initialize web server on Core 0 where TCP/IP stack runs
+    Serial.println("[Core 0] Initializing Web Server...");
+    setupWebServer();
+    webServerReady = true;
+    Serial.println("[Core 0] Web server ready!");
+
     while (true) {
         // Process messages from CAN queue to WebSocket
         while (canToWebQueue != NULL && xQueueReceive(canToWebQueue, &msg, 0) == pdTRUE) {
@@ -1056,22 +1065,31 @@ void setup() {
     );
 
     if (taskResult1 == pdPASS && taskResult2 == pdPASS) {
-        Serial.println("Core 0: Network & WebSocket");
+        Serial.println("Tasks created successfully!");
+        Serial.println("Core 0: Network & WebSocket (lwIP/TCP runs here)");
         Serial.println("Core 1: CAN Processing");
 
-        // Give tasks time to start and initialize
-        delay(1000);
+        // Wait for network task to initialize web server on Core 0
+        Serial.println("\nWaiting for web server initialization...");
+        int timeout = 50; // 5 seconds timeout
+        while (!webServerReady && timeout > 0) {
+            delay(100);
+            timeout--;
+        }
 
-        // Initialize web server on Core 1 (where WiFi events run)
-        Serial.println("\nInitializing Web Server...");
-        setupWebServer();
+        if (webServerReady) {
+            Serial.println("\n========================================");
+            Serial.println("    System Ready!");
+            Serial.println("========================================\n");
 
-        Serial.println("\n========================================");
-        Serial.println("    System Ready!");
-        Serial.println("========================================\n");
-
-        printStatus();
-        displayMenu();
+            printStatus();
+            displayMenu();
+        } else {
+            Serial.println("\nERROR: Web server failed to initialize!");
+            Serial.println("Restarting...");
+            delay(2000);
+            ESP.restart();
+        }
     } else {
         Serial.println("ERROR: Failed to create tasks!");
         Serial.println("System cannot continue without tasks.");
