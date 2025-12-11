@@ -841,21 +841,24 @@ void updateCoreStats() {
     uint32_t now = millis();
 
     if (now - lastCheck > 1000) {
-        // Estimate load based on task stack high water marks
-        // Lower high water mark = more stack usage = higher load
-        UBaseType_t core0Stack = uxTaskGetStackHighWaterMark(networkTaskHandle);
-        UBaseType_t core1Stack = uxTaskGetStackHighWaterMark(canTaskHandle);
+        // Only check if task handles are valid
+        if (networkTaskHandle != NULL && canTaskHandle != NULL) {
+            // Estimate load based on task stack high water marks
+            // Lower high water mark = more stack usage = higher load
+            UBaseType_t core0Stack = uxTaskGetStackHighWaterMark(networkTaskHandle);
+            UBaseType_t core1Stack = uxTaskGetStackHighWaterMark(canTaskHandle);
 
-        // Convert to percentage (inverse - more used = higher load)
-        // This is a rough estimate, not precise CPU utilization
-        core0Load = ((8192 - core0Stack) * 100.0) / 8192.0;
-        core1Load = ((8192 - core1Stack) * 100.0) / 8192.0;
+            // Convert to percentage (inverse - more used = higher load)
+            // This is a rough estimate, not precise CPU utilization
+            core0Load = ((16384 - core0Stack) * 100.0) / 16384.0;
+            core1Load = ((16384 - core1Stack) * 100.0) / 16384.0;
 
-        // Clamp values
-        if (core0Load < 0) core0Load = 0;
-        if (core0Load > 100) core0Load = 100;
-        if (core1Load < 0) core1Load = 0;
-        if (core1Load > 100) core1Load = 100;
+            // Clamp values
+            if (core0Load < 0) core0Load = 0;
+            if (core0Load > 100) core0Load = 100;
+            if (core1Load < 0) core1Load = 0;
+            if (core1Load > 100) core1Load = 100;
+        }
 
         lastCheck = now;
     }
@@ -1000,9 +1003,16 @@ void setup() {
     // Create mutex for config access
     configMutex = xSemaphoreCreateMutex();
 
-    Serial.printf("Queue sizes: Web=%d, Serial=%d\n",
-        psramAvailable ? 100 : 20,
-        psramAvailable ? 50 : 10);
+    if (canToWebQueue != NULL && serialOutputQueue != NULL && configMutex != NULL) {
+        Serial.printf("Queue sizes: Web=%d, Serial=%d\n",
+            psramAvailable ? 100 : 20,
+            psramAvailable ? 50 : 10);
+    } else {
+        Serial.println("ERROR: Failed to create queues/mutex!");
+        Serial.println("Restarting...");
+        delay(2000);
+        ESP.restart();
+    }
 
     // Load configuration
     loadConfig();
@@ -1020,18 +1030,14 @@ void setup() {
     startCAN1();
     startCAN2();
 
-    // Initialize Web Server
-    Serial.println("Initializing Web Server...");
-    setupWebServer();
-
-    // Start dual-core tasks
+    // Start dual-core tasks BEFORE web server
     Serial.println("\nStarting dual-core tasks...");
 
     // CAN processing task on Core 1 (Application CPU)
-    xTaskCreatePinnedToCore(
+    BaseType_t taskResult1 = xTaskCreatePinnedToCore(
         canProcessingTask,   // Task function
         "CANTask",          // Task name
-        8192,               // Stack size (bytes)
+        16384,              // Stack size (bytes) - increased for stability
         NULL,               // Parameters
         2,                  // Priority (higher = more important)
         &canTaskHandle,     // Task handle
@@ -1039,18 +1045,30 @@ void setup() {
     );
 
     // Network task on Core 0 (Protocol CPU)
-    xTaskCreatePinnedToCore(
+    BaseType_t taskResult2 = xTaskCreatePinnedToCore(
         networkTask,        // Task function
         "NetworkTask",      // Task name
-        8192,               // Stack size (bytes)
+        16384,              // Stack size (bytes) - increased for stability
         NULL,               // Parameters
         1,                  // Priority
         &networkTaskHandle, // Task handle
         0                   // Core 0
     );
 
-    Serial.println("Core 0: Network & WebSocket");
-    Serial.println("Core 1: CAN Processing");
+    if (taskResult1 == pdPASS && taskResult2 == pdPASS) {
+        Serial.println("Core 0: Network & WebSocket");
+        Serial.println("Core 1: CAN Processing");
+
+        // Give tasks time to initialize before using them
+        delay(500);
+    } else {
+        Serial.println("ERROR: Failed to create tasks!");
+        Serial.println("Continuing in single-core mode...");
+    }
+
+    // Initialize Web Server AFTER tasks are running
+    Serial.println("\nInitializing Web Server...");
+    setupWebServer();
 
     Serial.println("\n========================================");
     Serial.println("    System Ready!");
