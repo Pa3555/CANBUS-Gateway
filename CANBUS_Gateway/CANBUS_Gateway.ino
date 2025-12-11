@@ -938,10 +938,6 @@ void networkTask(void* parameter) {
 
     Serial.println("[Core 0] Network task started");
 
-    // Initialize web server on Core 0 (where network events should run)
-    Serial.println("[Core 0] Initializing Web Server...");
-    setupWebServer();
-
     while (true) {
         // Process messages from CAN queue to WebSocket
         while (canToWebQueue != NULL && xQueueReceive(canToWebQueue, &msg, 0) == pdTRUE) {
@@ -1063,8 +1059,12 @@ void setup() {
         Serial.println("Core 0: Network & WebSocket");
         Serial.println("Core 1: CAN Processing");
 
-        // Give tasks time to initialize (including web server setup on Core 0)
+        // Give tasks time to start and initialize
         delay(1000);
+
+        // Initialize web server on Core 1 (where WiFi events run)
+        Serial.println("\nInitializing Web Server...");
+        setupWebServer();
 
         Serial.println("\n========================================");
         Serial.println("    System Ready!");
