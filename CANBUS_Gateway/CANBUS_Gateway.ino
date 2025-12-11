@@ -938,6 +938,10 @@ void networkTask(void* parameter) {
 
     Serial.println("[Core 0] Network task started");
 
+    // Initialize web server on Core 0 (where network events should run)
+    Serial.println("[Core 0] Initializing Web Server...");
+    setupWebServer();
+
     while (true) {
         // Process messages from CAN queue to WebSocket
         while (canToWebQueue != NULL && xQueueReceive(canToWebQueue, &msg, 0) == pdTRUE) {
@@ -1059,23 +1063,21 @@ void setup() {
         Serial.println("Core 0: Network & WebSocket");
         Serial.println("Core 1: CAN Processing");
 
-        // Give tasks time to initialize before using them
-        delay(500);
+        // Give tasks time to initialize (including web server setup on Core 0)
+        delay(1000);
+
+        Serial.println("\n========================================");
+        Serial.println("    System Ready!");
+        Serial.println("========================================\n");
+
+        printStatus();
+        displayMenu();
     } else {
         Serial.println("ERROR: Failed to create tasks!");
-        Serial.println("Continuing in single-core mode...");
+        Serial.println("System cannot continue without tasks.");
+        delay(2000);
+        ESP.restart();
     }
-
-    // Initialize Web Server AFTER tasks are running
-    Serial.println("\nInitializing Web Server...");
-    setupWebServer();
-
-    Serial.println("\n========================================");
-    Serial.println("    System Ready!");
-    Serial.println("========================================\n");
-
-    printStatus();
-    displayMenu();
 }
 
 // ============================================
