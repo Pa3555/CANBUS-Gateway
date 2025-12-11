@@ -50,10 +50,19 @@ https://dl.espressif.com/dl/package_esp32_index.json
 ```
 
 ### 2. Install Libraries
+
+**Via Library Manager:**
 - **mcp_canbus** by Longan Labs
-- **ESPAsyncWebServer** by me-no-dev
-- **AsyncTCP** by me-no-dev
 - **ArduinoJson** by Benoit Blanchon
+- **AsyncTCP** by me-no-dev
+
+**Manual Installation (ESP32 v3.x compatible):**
+- **ESPAsyncWebServer** (mathieucarbou's ESP32 v3.x fork):
+  1. Download: https://github.com/mathieucarbou/ESPAsyncWebServer/archive/refs/heads/master.zip
+  2. Arduino IDE → Sketch → Include Library → Add .ZIP Library
+  3. Select the downloaded ZIP file
+
+> **Note**: The official ESPAsyncWebServer by me-no-dev is not compatible with ESP32 v3.x. Use mathieucarbou's fork instead.
 
 ### 3. Select Board and Enable PSRAM
 - Tools → Board → **"ESP32S3 Dev Module"** or **"AutosportLabs ESP32-CAN-X2"**
@@ -109,6 +118,29 @@ Connect via Serial Monitor (115200 baud):
 - **[docs/HARDWARE_SETUP.md](docs/HARDWARE_SETUP.md)** - Wiring and hardware info
 - **[docs/USAGE_GUIDE.md](docs/USAGE_GUIDE.md)** - Detailed features guide
 - **[docs/CANOPEN_REFERENCE.md](docs/CANOPEN_REFERENCE.md)** - CANopen technical details
+
+## Troubleshooting
+
+### Compilation Errors
+
+**`mbedtls_md5_starts_ret` not declared / ESPAsyncWebServer errors**
+- **Cause**: Old ESPAsyncWebServer library incompatible with ESP32 v3.x
+- **Fix**: Install mathieucarbou's ESP32 v3.x compatible fork (see installation instructions above)
+- Uninstall old "ESPAsyncWebServer by me-no-dev" first
+
+**`StaticJsonDocument` deprecated warnings**
+- **Status**: Warnings only, code will compile and work
+- **Info**: ArduinoJson v7+ prefers `JsonDocument` but `StaticJsonDocument` still works
+- Safe to ignore for now
+
+**PSRAM not detected**
+- **Check**: Tools → PSRAM → "OPI PSRAM" is enabled
+- **Note**: Code works without PSRAM (uses smaller message buffers)
+
+**Upload fails**
+- Ensure correct port selected: Tools → Port
+- Hold BOOT button during upload if needed
+- Check USB cable supports data (not just power)
 
 ## Resources
 
